@@ -291,6 +291,31 @@ The `Dockerfile` at the root uses a two-stage build with stub source files to ca
 
 ---
 
+## Testing Patterns
+
+### Database Tests
+
+Use the `database_test!` macro for consistent database test setup:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    database_test!(test_something, |db| async move {
+        // db is a Database instance (Reference or MongoDB)
+    });
+}
+```
+
+Test fixtures are in:
+- `crates/core/database/fixtures/` — JSON fixtures (e.g. `server_with_roles.json`, `group_with_members.json`)
+- `crates/delta/fixtures/` — Route-level fixtures (e.g. `server_with_many_roles.json`)
+- `crates/core/files/tests/assets/` — Binary assets for file processing tests
+
+Test database names are auto-generated as `revolt_test_<random_7_digit_number>` and cleaned up automatically.
+
+---
+
 ## Key Conventions
 
 1. **Prefer `Object::create()` over raw insert ops** — the high-level methods handle event emission and other side effects.
@@ -301,6 +326,8 @@ The `Dockerfile` at the root uses a two-stage build with stub source files to ca
 6. **Configuration overrides** — never commit `Revolt.overrides.toml`; it is gitignored.
 7. **compose.override.yml** — use for local Docker port overrides; also gitignored.
 8. **Conventional commits** — PR titles must follow the conventional commits specification (enforced by CI).
+9. **Git sign-off required** — commits require `Signed-off-by` (`git commit -s`) and GPG signing per the contribution guide.
+10. **Squash merge strategy** — PRs are squash-merged; keep atomic, focused changes per PR.
 
 ---
 
