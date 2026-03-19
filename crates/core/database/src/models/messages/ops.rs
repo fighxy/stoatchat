@@ -1,43 +1,114 @@
+// =============================================================================
+// ФАЙЛ: crates/core/database/src/models/messages/ops.rs
+// НАЗНАЧЕНИЕ: Абстрактный трейт для операций с сообщениями в базе данных.
+//
+// АРХИТЕКТУРНЫЙ ПАТТЕРН: "Database Abstraction Layer" (DAL).
+// Вместо того чтобы писать код, завязанный на конкретную БД (MongoDB),
+// мы определяем ТРЕЙТ — интерфейс с набором методов.
+// Затем реализуем этот трейт для каждого бэкенда отдельно:
+//   - ops/mongodb.rs — реализация для MongoDB (production)
+//   - ops/reference.rs — реализация для in-memory БД (тесты)
+// Остальной код работает только с трейтом, не зная о конкретной БД.
+// =============================================================================
+
+// Импортируем наш стандартный тип Result (см. crates/core/result/).
+// Он используется как возвращаемый тип всех async-методов трейта.
 use revolt_result::Result;
 
+// Импортируем типы, необходимые для работы с сообщениями:
+// - AppendMessage — тип для добавления данных к сообщению (реакции, embed'ы)
+// - FieldsMessage — перечисление полей, которые можно удалить из сообщения
+// - Message — основная структура сообщения
+// - MessageQuery — параметры запроса (фильтрация, сортировка, пагинация)
+// - PartialMessage — частичное обновление (только изменённые поля)
 use crate::{AppendMessage, FieldsMessage, Message, MessageQuery, PartialMessage};
 
+// Условная компиляция: подключаем модуль с MongoDB-реализацией
+// только если активирована feature "mongodb".
 #[cfg(feature = "mongodb")]
 mod mongodb;
+// Reference-реализация (in-memory) всегда доступна — нужна для тестов.
 mod reference;
 
+// =============================================================================
+// ТРЕЙТ AbstractMessages
+// =============================================================================
+
+// `#[async_trait]` — процедурный макрос, позволяющий объявлять `async fn`
+// внутри трейтов. Нативно Rust не поддерживает это из-за того, что каждый
+// async fn имеет уникальный анонимный тип Future, что несовместимо с
+// динамической диспетчеризацией трейтов. Макрос оборачивает возвращаемое
+// значение в `Pin<Box<dyn Future<Output = ...> + Send>>`.
 #[async_trait]
+// `pub trait AbstractMessages` — публичный трейт с именем AbstractMessages.
+// Трейт — это интерфейс (похожий на interface в Java/Go или abstract class в Python).
+// Он определяет НАБОР МЕТОДОВ, которые должна реализовать каждая структура-бэкенд.
+//
+// `: Sync + Send` — ограничения (bounds) трейта:
+// - `Send` означает, что значение безопасно передавать между потоками
+// - `Sync` означает, что к значению безопасно обращаться из нескольких потоков одновременно
+// Эти ограничения необходимы, так как async-задачи могут выполняться в разных потоках.
 pub trait AbstractMessages: Sync + Send {
-    /// Insert a new message into the database
+    /// Вставить новое сообщение в базу данных.
+    ///
+    /// `&self` — метод принимает неизменяемую ссылку на себя.
+    /// `&Message` — ссылка на сообщение (данные не перемещаются, только читаются).
+    /// `-> Result<()>` — возвращает Ok(()) при успехе или Err(Error) при ошибке.
+    /// Единица `()` — "пустой" тип, аналог void в других языках.
     async fn insert_message(&self, message: &Message) -> Result<()>;
 
-    /// Fetch a message by its id
+    /// Получить сообщение по его идентификатору.
+    ///
+    /// `id: &str` — строковая ссылка на ID (ULID-строка).
+    /// `-> Result<Message>` — возвращает сообщение или ошибку (например, NotFound).
     async fn fetch_message(&self, id: &str) -> Result<Message>;
 
-    /// Fetch multiple messages by given query
+    /// Получить несколько сообщений по параметрам запроса.
+    ///
+    /// `MessageQuery` — структура с фильтрами: канал, временной диапазон,
+    /// лимит, сортировка и т.д. Позволяет гибко запрашивать сообщения.
+    /// `-> Result<Vec<Message>>` — возвращает вектор (динамический массив) сообщений.
     async fn fetch_messages(&self, query: MessageQuery) -> Result<Vec<Message>>;
 
-    /// Fetch multiple messages by given IDs
+    /// Получить несколько сообщений по списку идентификаторов.
+    ///
+    /// `ids: &[String]` — срез (slice) строк — неизменяемый вид на массив строк.
+    /// Срез не владеет данными, что эффективнее чем передача Vec<String>.
     async fn fetch_messages_by_id(&self, ids: &[String]) -> Result<Vec<Message>>;
 
-    /// Update a given message with new information
+    /// Обновить сообщение — применить частичные изменения.
+    ///
+    /// `id: &str` — ID сообщения для обновления.
+    /// `message: &PartialMessage` — только изменённые поля (остальные None).
+    /// `remove: Vec<FieldsMessage>` — список полей для удаления (например, embeds).
+    /// Этот паттерн соответствует HTTP PATCH-семантике.
     async fn update_message(&self, id: &str, message: &PartialMessage, remove: Vec<FieldsMessage>) -> Result<()>;
 
-    /// Append information to a given message
+    /// Добавить данные к существующему сообщению (например, embed после парсинга URL).
+    ///
+    /// AppendMessage используется для добавления данных в массивы (reactions, embeds),
+    /// а не для замены значений — в MongoDB это операция $push/$addToSet.
     async fn append_message(&self, id: &str, append: &AppendMessage) -> Result<()>;
 
-    /// Add a new reaction to a message
+    /// Добавить реакцию пользователя к сообщению.
+    ///
+    /// `emoji: &str` — идентификатор эмодзи (Unicode или кастомный ID).
+    /// `user: &str` — ID пользователя, добавившего реакцию.
     async fn add_reaction(&self, id: &str, emoji: &str, user: &str) -> Result<()>;
 
-    /// Remove a reaction from a message
+    /// Убрать реакцию конкретного пользователя с сообщения.
     async fn remove_reaction(&self, id: &str, emoji: &str, user: &str) -> Result<()>;
 
-    /// Remove reaction from a message
+    /// Убрать ВСЕ реакции с определённым эмодзи (например, после удаления кастомного эмодзи).
     async fn clear_reaction(&self, id: &str, emoji: &str) -> Result<()>;
 
-    /// Delete a message from the database by its id
+    /// Удалить одно сообщение из базы данных по ID.
     async fn delete_message(&self, id: &str) -> Result<()>;
 
-    /// Delete messages from a channel by their ids and corresponding channel id
+    /// Удалить несколько сообщений из канала по их ID.
+    ///
+    /// `channel: &str` — ID канала (для защиты от удаления чужих сообщений).
+    /// `ids: &[String]` — срез с ID сообщений для удаления.
+    /// Используется при массовом удалении (bulk delete) — эффективнее чем N отдельных запросов.
     async fn delete_messages(&self, channel: &str, ids: &[String]) -> Result<()>;
 }
